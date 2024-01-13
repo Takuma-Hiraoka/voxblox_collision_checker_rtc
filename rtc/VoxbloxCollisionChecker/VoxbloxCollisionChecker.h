@@ -1,6 +1,8 @@
 #ifndef VOXBLOXCOLLISIONCHECKER_H
 #define VOXBLOXCOLLISIONCHECKER_H
 
+#include <unordered_map>
+
 #include <rtm/Manager.h>
 #include <rtm/DataFlowComponentBase.h>
 #include <rtm/DataInPort.h>
@@ -38,6 +40,10 @@ class VoxbloxCollisionChecker : public RTC::DataFlowComponentBase
 
  private:
   cnoid::BodyPtr robot_;
+
+  std::unordered_map<cnoid::LinkPtr, std::vector<cnoid::Vector3f> > verticesMap_;
+
+  std::vector<cnoid::LinkPtr> targetLinks_;
 };
 
 extern "C"
