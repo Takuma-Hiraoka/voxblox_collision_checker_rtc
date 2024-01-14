@@ -41,9 +41,15 @@ class VoxbloxCollisionChecker : public RTC::DataFlowComponentBase
  private:
   cnoid::BodyPtr robot_;
 
-  std::unordered_map<cnoid::LinkPtr, std::vector<cnoid::Vector3f> > verticesMap_;
+  std::unordered_map<cnoid::LinkPtr, std::vector<cnoid::Vector3> > verticesMap_;
 
   std::vector<cnoid::LinkPtr> targetLinks_;
+
+  cnoid::Position fieldOrigin_;
+  double minWeight_ = 1e-6;
+  double maxDistance_ = 2.0;
+  double minDistance_ = 0.02;
+  double defaultDistance_ = 2.0;
 };
 
 extern "C"

@@ -6,6 +6,7 @@ add_definitions(-Wno-deprecated)
 find_package(catkin REQUIRED COMPONENTS
   rtmbuild
   collision_checker_msgs
+  voxblox
   voxblox_msgs_rtmros_bridge
   )
 find_package(choreonoid REQUIRED)
