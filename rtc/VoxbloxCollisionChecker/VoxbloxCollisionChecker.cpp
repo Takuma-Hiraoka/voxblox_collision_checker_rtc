@@ -7,8 +7,6 @@
 #include "voxblox/core/block.h"
 #include "voxblox/core/layer.h"
 #include "voxblox/core/voxel.h"
-#include "voxblox/core/esdf_map.h"
-#include "voxblox/integrator/esdf_integrator.h"
 
 static void addMesh(cnoid::SgMeshPtr model, std::shared_ptr<cnoid::MeshExtractor> meshExtractor){
   cnoid::SgMeshPtr mesh = meshExtractor->currentMesh();
@@ -152,6 +150,13 @@ RTC::ReturnCode_t VoxbloxCollisionChecker::onInitialize(){
 
 RTC::ReturnCode_t VoxbloxCollisionChecker::onExecute(RTC::UniqueId ec_id){
 
+  std::lock_guard<std::mutex> guard(this->mutex_);
+
+  if (this->thread_done_ && this->thread_){
+    this->thread_->join();
+    this->thread_ = nullptr;
+  }
+
   if (this->m_qIn_.isNew()) this->m_qIn_.read();
   if (this->m_basePosIn_.isNew()) this->m_basePosIn_.read();
   if (this->m_baseRpyIn_.isNew()) this->m_baseRpyIn_.read();
@@ -197,81 +202,73 @@ RTC::ReturnCode_t VoxbloxCollisionChecker::onExecute(RTC::UniqueId ec_id){
         }
         block_ptr->deserializeFromIntegers(data);
       }
+      if ( !this->thread_) {
+	voxblox::EsdfMap::Config esdf_config;
+	// Same voxel size for ESDF as with TSDF
+	esdf_config.esdf_voxel_size = m_tsdfmap_.data.voxel_size;
+	// Same number of voxels per side for ESDF as with TSDF
+	esdf_config.esdf_voxels_per_side = m_tsdfmap_.data.voxels_per_side;
+	this->thread_done_ = false;
+	this->thread_ = std::make_shared<std::thread>(&VoxbloxCollisionChecker::voxbloxCallback, this, tsdf_layer, esdf_config);
+      }
     }
-
-    // ESDF maps.
-    voxblox::EsdfMap::Config esdf_config;
-    // Same voxel size for ESDF as with TSDF
-    esdf_config.esdf_voxel_size = m_tsdfmap_.data.voxel_size;
-    // Same number of voxels per side for ESDF as with TSDF
-    esdf_config.esdf_voxels_per_side = m_tsdfmap_.data.voxels_per_side;
-
-    voxblox::EsdfIntegrator::Config esdf_integrator_config;
-    esdf_integrator_config.min_weight = minWeight_;
-    esdf_integrator_config.min_distance_m = minDistance_;
-    esdf_integrator_config.max_distance_m = maxDistance_;;
-    esdf_integrator_config.default_distance_m = defaultDistance_;
-
-    voxblox::EsdfMap esdf_map(esdf_config);
-    voxblox::EsdfIntegrator esdf_integrator(esdf_integrator_config, tsdf_layer.get(),
-                                            esdf_map.getEsdfLayerPtr());
-    esdf_integrator.updateFromTsdfLayerBatch();
-
-    // collision
-    {
+  }
+  // collision
+  {
+    if (this->esdfMap_) {
+      std::shared_ptr<voxblox::EsdfMap> esdfMap = this->esdfMap_;
       Eigen::Affine3d fieldOriginInv = this->fieldOrigin_.inverse();
       for(int i=0;i<this->targetLinks_.size();i++){
-        cnoid::LinkPtr link = this->targetLinks_[i];
+	cnoid::LinkPtr link = this->targetLinks_[i];
 
-        double min_dist = this->maxDistance_ + 1;
-        cnoid::Vector3 closest_v = cnoid::Vector3::Zero();
-        cnoid::Vector3 closest_point_fieldLocal = cnoid::Vector3::Zero();
-        cnoid::Vector3 closest_direction_fieldLocal = cnoid::Vector3::UnitX();
+	double min_dist = this->maxDistance_ + 1;
+	cnoid::Vector3 closest_v = cnoid::Vector3::Zero();
+	cnoid::Vector3 closest_point_fieldLocal = cnoid::Vector3::Zero();
+	cnoid::Vector3 closest_direction_fieldLocal = cnoid::Vector3::UnitX();
 
-        const std::vector<cnoid::Vector3>& vertices = this->verticesMap_[link];
-        for(int j=0;j<vertices.size();j++){
-          cnoid::Vector3 v = link->T() * vertices[j];
+	const std::vector<cnoid::Vector3>& vertices = this->verticesMap_[link];
+	for(int j=0;j<vertices.size();j++){
+	  cnoid::Vector3 v = link->T() * vertices[j];
 
-          cnoid::Vector3 v_fieldLocal = fieldOriginInv * v;
+	  cnoid::Vector3 v_fieldLocal = fieldOriginInv * v;
 
-          cnoid::Vector3 grad;
-          double dist;
-          esdf_map.getDistanceAndGradientAtPosition(v_fieldLocal, &dist, &grad);
-          if(grad.norm() > 0){
-            if(dist < min_dist){
-              closest_direction_fieldLocal[0] = (grad[0]/grad.norm());
-              closest_direction_fieldLocal[1] = (grad[1]/grad.norm());
-              closest_direction_fieldLocal[2] = (grad[2]/grad.norm());
-              closest_point_fieldLocal[0] = v_fieldLocal[0]-closest_direction_fieldLocal[0]*dist;
-              closest_point_fieldLocal[1] = v_fieldLocal[1]-closest_direction_fieldLocal[1]*dist;
-              closest_point_fieldLocal[2] = v_fieldLocal[2]-closest_direction_fieldLocal[2]*dist;
-              min_dist = dist;
-              closest_v = vertices[j];
-            }
-          }
-        }
+	  cnoid::Vector3 grad;
+	  double dist;
+	  esdfMap->getDistanceAndGradientAtPosition(v_fieldLocal, &dist, &grad);
+	  if(grad.norm() > 0){
+	    if(dist < min_dist){
+	      closest_direction_fieldLocal[0] = (grad[0]/grad.norm());
+	      closest_direction_fieldLocal[1] = (grad[1]/grad.norm());
+	      closest_direction_fieldLocal[2] = (grad[2]/grad.norm());
+	      closest_point_fieldLocal[0] = v_fieldLocal[0]-closest_direction_fieldLocal[0]*dist;
+	      closest_point_fieldLocal[1] = v_fieldLocal[1]-closest_direction_fieldLocal[1]*dist;
+	      closest_point_fieldLocal[2] = v_fieldLocal[2]-closest_direction_fieldLocal[2]*dist;
+	      min_dist = dist;
+	      closest_v = vertices[j];
+	    }
+	  }
+	}
 
-        if(min_dist <= this->maxDistance_ && min_dist >= this->minDistance_){
-          cnoid::Vector3 closest_point = this->fieldOrigin_ * closest_point_fieldLocal;
-          cnoid::Vector3 closest_direction = this->fieldOrigin_.linear() * closest_direction_fieldLocal;
+	if(min_dist <= this->maxDistance_ && min_dist >= this->minDistance_){
+	  cnoid::Vector3 closest_point = this->fieldOrigin_ * closest_point_fieldLocal;
+	  cnoid::Vector3 closest_direction = this->fieldOrigin_.linear() * closest_direction_fieldLocal;
 
-          collision_checker_msgs::CollisionIdl collision;
-          collision.link1 = link->name().c_str();
-          collision.point1.x = closest_v[0];
-          collision.point1.y = closest_v[1];
-          collision.point1.z = closest_v[2];
-          collision.link2 = "";
-          collision.point2.x = closest_point[0];
-          collision.point2.y = closest_point[1];
-          collision.point2.z = closest_point[2];
-          collision.direction21.x = closest_direction[0];
-          collision.direction21.y = closest_direction[1];
-          collision.direction21.z = closest_direction[2];
-          collision.distance = min_dist;
-          collisions.push_back(collision);
-        }
-      }
-
+	  collision_checker_msgs::CollisionIdl collision;
+	  collision.link1 = link->name().c_str();
+	  collision.point1.x = closest_v[0];
+	  collision.point1.y = closest_v[1];
+	  collision.point1.z = closest_v[2];
+	  collision.link2 = "";
+	  collision.point2.x = closest_point[0];
+	  collision.point2.y = closest_point[1];
+	  collision.point2.z = closest_point[2];
+	  collision.direction21.x = closest_direction[0];
+	  collision.direction21.y = closest_direction[1];
+	  collision.direction21.z = closest_direction[2];
+	  collision.distance = min_dist;
+	  collisions.push_back(collision);
+	}
+      } 
     }
   }
 
@@ -284,6 +281,20 @@ RTC::ReturnCode_t VoxbloxCollisionChecker::onExecute(RTC::UniqueId ec_id){
 
   return RTC::RTC_OK;
 }
+
+void VoxbloxCollisionChecker::voxbloxCallback(std::shared_ptr<voxblox::Layer<voxblox::TsdfVoxel>> tsdf_layer, voxblox::EsdfMap::Config esdf_config)
+{
+  this->esdfMap_ = std::make_shared<voxblox::EsdfMap>(esdf_config);
+  voxblox::EsdfIntegrator::Config esdf_integrator_config;
+  esdf_integrator_config.min_weight = this->minWeight_;
+  esdf_integrator_config.min_distance_m = this->minDistance_;
+  esdf_integrator_config.max_distance_m = this->maxDistance_;;
+  esdf_integrator_config.default_distance_m = this->defaultDistance_;
+  this->esdfIntegrator_ = std::make_shared<voxblox::EsdfIntegrator>(esdf_integrator_config, tsdf_layer.get(),
+								    this->esdfMap_->getEsdfLayerPtr());
+  this->esdfIntegrator_->updateFromTsdfLayerBatch();
+  this->thread_done_ = true;
+};
 
 static const char* VoxbloxCollisionChecker_spec[] = {
   "implementation_id", "VoxbloxCollisionChecker",
