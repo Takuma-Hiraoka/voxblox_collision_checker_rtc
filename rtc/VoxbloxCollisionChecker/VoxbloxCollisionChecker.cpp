@@ -3,6 +3,7 @@
 #include <cnoid/SceneDrawables>
 #include <cnoid/MeshExtractor>
 #include <cnoid/EigenUtil>
+#include <cnoid/TimeMeasure>
 
 #include "voxblox/core/block.h"
 #include "voxblox/core/layer.h"
@@ -284,15 +285,21 @@ RTC::ReturnCode_t VoxbloxCollisionChecker::onExecute(RTC::UniqueId ec_id){
 
 void VoxbloxCollisionChecker::voxbloxCallback(std::shared_ptr<voxblox::Layer<voxblox::TsdfVoxel>> tsdf_layer, voxblox::EsdfMap::Config esdf_config)
 {
+  cnoid::TimeMeasure timer;
+  timer.begin();
   this->esdfMap_ = std::make_shared<voxblox::EsdfMap>(esdf_config);
   voxblox::EsdfIntegrator::Config esdf_integrator_config;
   esdf_integrator_config.min_weight = this->minWeight_;
   esdf_integrator_config.min_distance_m = this->minDistance_;
   esdf_integrator_config.max_distance_m = this->maxDistance_;;
   esdf_integrator_config.default_distance_m = this->defaultDistance_;
+  esdf_integrator_config.collision_radius = 1.2;
+  cnoid::Vector3d collisionOrigin_ = this->fieldOrigin_.inverse() * this->robot_->rootLink()->p();
+  esdf_integrator_config.collision_origin = voxblox::Point(collisionOrigin_[0], collisionOrigin_[1], collisionOrigin_[2]);
   this->esdfIntegrator_ = std::make_shared<voxblox::EsdfIntegrator>(esdf_integrator_config, tsdf_layer.get(),
 								    this->esdfMap_->getEsdfLayerPtr());
   this->esdfIntegrator_->updateFromTsdfLayerBatch();
+  std::cerr << timer.measure() << std::endl;
   this->thread_done_ = true;
 };
 
