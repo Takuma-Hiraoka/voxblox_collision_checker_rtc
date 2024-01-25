@@ -63,7 +63,7 @@ class VoxbloxCollisionChecker : public RTC::DataFlowComponentBase
   std::shared_ptr<voxblox::EsdfIntegrator> esdfIntegrator_ = nullptr;
   double minWeight_ = 1e-6;
   double maxDistance_ = 1.0;
-  double minDistance_ = 0.02;
+  double minDistance_ = -0.02;
   double defaultDistance_ = 1.0;
 };
 
